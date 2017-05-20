@@ -84,6 +84,7 @@ func (g *GobMapper) RegisterReader() io.Reader {
 func (g *GobMapper) Start() {
 	go func() {
 		defer close(g.sharedChannel)
+		encounteredFirstRecord := false
 		for {
 			buffer := new(bytes.Buffer)
 			reader := io.TeeReader(g.reader, buffer)
@@ -117,10 +118,16 @@ func (g *GobMapper) Start() {
 			}
 
 			if typeId&1 != 0 {
-				for _, ch := range g.privateChannels {
-					ch <- buffer.Bytes()
+				if !encounteredFirstRecord {
+					for _, ch := range g.privateChannels {
+						ch <- buffer.Bytes()
+					}
+				} else {
+					log.Printf("Dropped type record %d after first data record",
+						typeId)
 				}
 			} else {
+				encounteredFirstRecord = true
 				g.sharedChannel <- buffer.Bytes()
 			}
 		}
