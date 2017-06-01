@@ -17,15 +17,7 @@ import (
 var wanDevice = flag.String("wan_device", "eth0", "Name of the WAN (Internet) device to monitor.")
 var listenSpec = flag.String("listen_spec", "", "Host and port on which to provide Prometheus monitoring.")
 
-var (
-	wanTotalBytesGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "wan_total_bytes",
-			Help: "Total number of bytes sent and received from the Internet as recorded by this recorder job instance",
-		}, []string{
-			"job_start_time",
-		})
-)
+var globalWanTotal uint64
 
 func networkMonitoringWorker() error {
 	startTime := time.Now()
@@ -56,7 +48,9 @@ func networkMonitoringWorker() error {
 			}
 			switch i {
 			case 0:
-				atomic.AddUint64(&layer2PlusTotal, uint64(packet.Metadata().Length-len(layer.LayerContents())))
+				packetSize := uint64(packet.Metadata().Length - len(layer.LayerContents()))
+				atomic.AddUint64(&layer2PlusTotal, packetSize)
+				atomic.AddUint64(&globalWanTotal, packetSize)
 			default:
 				break // Stop at the first unmatched layer.
 			}
@@ -64,8 +58,29 @@ func networkMonitoringWorker() error {
 	}
 }
 
+func globalWanTotalGaugeFunc() float64 {
+	delta := atomic.SwapUint64(&globalWanTotal, 0)
+	return float64(delta)
+}
+
+var (
+	wanTotalBytesGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "wan_total_bytes",
+			Help: "Total number of bytes sent and received from the Internet as recorded by this recorder job instance",
+		}, []string{
+			"job_start_time",
+		})
+	wanDeltaBytesGauge = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "wan_delta_bytes",
+			Help: "Number of bytes sent and received from the Internet as recorded by this recorder job instance, since last collection",
+		}, globalWanTotalGaugeFunc)
+)
+
 func init() {
 	prometheus.MustRegister(wanTotalBytesGauge)
+	prometheus.MustRegister(wanDeltaBytesGauge)
 }
 
 func main() {
