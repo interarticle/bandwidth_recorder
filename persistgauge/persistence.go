@@ -1,7 +1,9 @@
 package persistgauge
 
 import (
+    "context"
 	"encoding/json"
+    "log"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -10,10 +12,13 @@ import (
 
 const (
 	metricsBucketName = "persistent-metrics"
+	autoSaveInterval         = 1 * time.Minute
 )
 
 type Storage struct {
 	db *bolt.DB
+
+    gauges []*Gauge
 }
 
 type MetricValue struct {
@@ -84,6 +89,33 @@ func (s *Storage) WriteMetric(metric string, values MetricValues) error {
 	})
 }
 
+// Warning: not thread safe.
 func (s *Storage) NewGauge(opts prometheus.GaugeOpts, options ...GaugeOption) (*Gauge, error) {
-	return newGauge(s, opts, options...)
+    gauge, err := newGauge(s, opts, options...)
+    if err != nil {
+        return nil, err
+    }
+    s.gauges = append(s.gauges, gauge)
+    return gauge, nil
+}
+
+func (s *Storage) StartAutoSave(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(autoSaveInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+                for _, gauge := range s.gauges {
+				err := gauge.saveMetrics()
+				if err != nil {
+					log.Printf("Warning: failed to save metrics periodically: %v", err)
+				}
+            }
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }

@@ -1,19 +1,16 @@
 package persistgauge
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
 	timeWindowStartLabelName = "since"
-	autoSaveInterval         = 1 * time.Minute
 )
 
 type GaugeOption func(*Gauge) error
@@ -77,26 +74,6 @@ func (g *Gauge) Collect(ch chan<- prometheus.Metric) {
 		err := g.saveMetrics()
 		if err != nil {
 			log.Printf("Warning: failed to save metrics: %v", err)
-		}
-	}()
-}
-
-// StartAutoSave starts a new goroutine that saves metrics once per minute.
-func (g *Gauge) StartAutoSave(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(autoSaveInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				err := g.saveMetrics()
-				if err != nil {
-					log.Printf("Warning: failed to save metrics periodically: %v", err)
-				}
-			case <-ctx.Done():
-				return
-			}
 		}
 	}()
 }
