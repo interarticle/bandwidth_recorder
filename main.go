@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -12,12 +13,19 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/interarticle/bandwidth_recorder/persistgauge"
 )
 
-var wanDevice = flag.String("wan_device", "eth0", "Name of the WAN (Internet) device to monitor.")
-var listenSpec = flag.String("listen_spec", "", "Host and port on which to provide Prometheus monitoring.")
+var (
+	wanDevice    = flag.String("wan_device", "eth0", "Name of the WAN (Internet) device to monitor.")
+	listenSpec   = flag.String("listen_spec", "", "Host and port on which to provide Prometheus monitoring.")
+	databasePath = flag.String("database_path", "", "Path to the database used to store persistent metrics.")
+)
 
-var globalWanTotal uint64
+const (
+	monthDateFormat = "2006-01"
+)
 
 func networkMonitoringWorker() error {
 	startTime := time.Now()
@@ -31,10 +39,13 @@ func networkMonitoringWorker() error {
 	}
 	packets := gopacket.NewPacketSource(handle, handle.LinkType())
 	var layer2PlusTotal uint64
+	var layer2PlusDelta uint64
 	go func() {
 		for {
 			time.Sleep(time.Second)
 			gauge.Set(float64(atomic.LoadUint64(&layer2PlusTotal)))
+			datetimeString := time.Now().Format(monthDateFormat)
+			l2TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer2PlusDelta, 0)))
 		}
 	}()
 	for {
@@ -50,17 +61,12 @@ func networkMonitoringWorker() error {
 			case 0:
 				packetSize := uint64(packet.Metadata().Length - len(layer.LayerContents()))
 				atomic.AddUint64(&layer2PlusTotal, packetSize)
-				atomic.AddUint64(&globalWanTotal, packetSize)
+				atomic.AddUint64(&layer2PlusDelta, packetSize)
 			default:
 				break // Stop at the first unmatched layer.
 			}
 		}
 	}
-}
-
-func globalWanTotalGaugeFunc() float64 {
-	delta := atomic.SwapUint64(&globalWanTotal, 0)
-	return float64(delta)
 }
 
 var (
@@ -71,22 +77,34 @@ var (
 		}, []string{
 			"job_start_time",
 		})
-	wanDeltaBytesGauge = prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name: "wan_delta_bytes",
-			Help: "Number of bytes sent and received from the Internet as recorded by this recorder job instance, since last collection",
-		}, globalWanTotalGaugeFunc)
+	l2TotalBytesGauge *persistgauge.Gauge
 )
+
+var persistStorage *persistgauge.Storage
 
 func init() {
 	prometheus.MustRegister(wanTotalBytesGauge)
-	prometheus.MustRegister(wanDeltaBytesGauge)
 }
 
 func main() {
 	flag.Parse()
 
 	http.Handle("/metrics", promhttp.Handler())
+
+	var err error
+	persistStorage, err = persistgauge.New(*databasePath)
+	persistStorage.StartAutoSave(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	l2TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+		Name: "l2_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 2",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	prometheus.MustRegister(l2TotalBytesGauge)
 
 	go func() {
 		err := networkMonitoringWorker()
