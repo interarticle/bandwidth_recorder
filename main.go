@@ -40,12 +40,16 @@ func networkMonitoringWorker() error {
 	packets := gopacket.NewPacketSource(handle, handle.LinkType())
 	var layer2PlusTotal uint64
 	var layer2PlusDelta uint64
+	var layer3PlusDelta uint64
+	var layer4PlusDelta uint64
 	go func() {
 		for {
 			time.Sleep(time.Second)
 			gauge.Set(float64(atomic.LoadUint64(&layer2PlusTotal)))
 			datetimeString := time.Now().Format(monthDateFormat)
 			l2TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer2PlusDelta, 0)))
+			l3TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer3PlusDelta, 0)))
+			l4TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer4PlusDelta, 0)))
 		}
 	}()
 	for {
@@ -57,11 +61,18 @@ func networkMonitoringWorker() error {
 			if _, ok := layer.(gopacket.ErrorLayer); ok {
 				continue // Ignore error layer.
 			}
+			remainingSize := uint64(packet.Metadata().Length)
 			switch i {
 			case 0:
-				packetSize := uint64(packet.Metadata().Length - len(layer.LayerContents()))
-				atomic.AddUint64(&layer2PlusTotal, packetSize)
-				atomic.AddUint64(&layer2PlusDelta, packetSize)
+				remainingSize -= uint64(len(layer.LayerContents()))
+				atomic.AddUint64(&layer2PlusTotal, remainingSize)
+				atomic.AddUint64(&layer2PlusDelta, remainingSize)
+			case 1:
+				remainingSize -= uint64(len(layer.LayerContents()))
+				atomic.AddUint64(&layer3PlusDelta, remainingSize)
+			case 2:
+				remainingSize -= uint64(len(layer.LayerContents()))
+				atomic.AddUint64(&layer4PlusDelta, remainingSize)
 			default:
 				break // Stop at the first unmatched layer.
 			}
@@ -78,6 +89,8 @@ var (
 			"job_start_time",
 		})
 	l2TotalBytesGauge *persistgauge.Gauge
+	l3TotalBytesGauge *persistgauge.Gauge
+	l4TotalBytesGauge *persistgauge.Gauge
 )
 
 var persistStorage *persistgauge.Storage
@@ -105,6 +118,22 @@ func main() {
 		log.Fatal(err)
 	}
 	prometheus.MustRegister(l2TotalBytesGauge)
+	l3TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+		Name: "l3_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 3",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	prometheus.MustRegister(l3TotalBytesGauge)
+	l4TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+		Name: "l4_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 4",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	prometheus.MustRegister(l4TotalBytesGauge)
 
 	go func() {
 		err := networkMonitoringWorker()
