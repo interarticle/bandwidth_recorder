@@ -110,7 +110,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	l2TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
+	l2TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
 		Name: "l2_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 2",
 	})
@@ -118,7 +118,7 @@ func main() {
 		log.Fatal(err)
 	}
 	prometheus.MustRegister(l2TotalBytesCounter)
-	l3TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
+	l3TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
 		Name: "l3_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 3",
 	})
@@ -126,7 +126,7 @@ func main() {
 		log.Fatal(err)
 	}
 	prometheus.MustRegister(l3TotalBytesCounter)
-	l4TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
+	l4TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
 		Name: "l4_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 4",
 	})
