@@ -81,6 +81,7 @@ func networkMonitoringWorker() error {
 }
 
 var (
+	persistStorage     = persistmetric.New()
 	wanTotalBytesGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "wan_total_bytes",
@@ -88,15 +89,25 @@ var (
 		}, []string{
 			"job_start_time",
 		})
-	l2TotalBytesCounter *persistmetric.Counter
-	l3TotalBytesCounter *persistmetric.Counter
-	l4TotalBytesCounter *persistmetric.Counter
+	l2TotalBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l2_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 2",
+	})
+	l3TotalBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l3_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 3",
+	})
+	l4TotalBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l4_total_bytes",
+		Help: "Total number of bytes sent and received from the Internet on Layer 4",
+	})
 )
-
-var persistStorage *persistmetric.Storage
 
 func init() {
 	prometheus.MustRegister(wanTotalBytesGauge)
+	prometheus.MustRegister(l2TotalBytesCounter)
+	prometheus.MustRegister(l3TotalBytesCounter)
+	prometheus.MustRegister(l4TotalBytesCounter)
 }
 
 func main() {
@@ -104,36 +115,10 @@ func main() {
 
 	http.Handle("/metrics", promhttp.Handler())
 
-	var err error
-	persistStorage, err = persistmetric.New(*databasePath)
-	persistStorage.StartAutoSave(context.Background())
+	err = persistmetric.Initialize(context.Background(), *databasePath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	l2TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
-		Name: "l2_total_bytes",
-		Help: "Total number of bytes sent and received from the Internet on Layer 2",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	prometheus.MustRegister(l2TotalBytesCounter)
-	l3TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
-		Name: "l3_total_bytes",
-		Help: "Total number of bytes sent and received from the Internet on Layer 3",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	prometheus.MustRegister(l3TotalBytesCounter)
-	l4TotalBytesCounter, err = persistStorage.NewCounter(prometheus.Opts{
-		Name: "l4_total_bytes",
-		Help: "Total number of bytes sent and received from the Internet on Layer 4",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	prometheus.MustRegister(l4TotalBytesCounter)
 
 	go func() {
 		err := networkMonitoringWorker()
