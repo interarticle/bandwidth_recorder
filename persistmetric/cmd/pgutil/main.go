@@ -5,7 +5,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/interarticle/bandwidth_recorder/persistgauge"
+	"github.com/interarticle/bandwidth_recorder/persistmetric"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 func main() {
 	flag.Parse()
 
-	storage, err := persistgauge.New(*dbPath)
+	storage, err := persistmetric.New(*dbPath)
 
 	if err != nil {
 		log.Fatal(err)
@@ -47,7 +47,7 @@ func main() {
 			log.Fatal("Both --set_metric and --new_metric_values must be set")
 		}
 
-		var newValues persistgauge.MetricValues
+		var newValues persistmetric.MetricValues
 		err := json.Unmarshal([]byte(*newMetricValues), &newValues)
 		if err != nil {
 			log.Fatal(err)

@@ -1,4 +1,4 @@
-package persistgauge
+package persistmetric
 
 import (
 	"context"
@@ -18,7 +18,7 @@ const (
 type Storage struct {
 	db *bolt.DB
 
-	gauges []*Gauge
+	counters []*Counter
 }
 
 type MetricValue struct {
@@ -90,13 +90,13 @@ func (s *Storage) WriteMetric(metric string, values MetricValues) error {
 }
 
 // Warning: not thread safe.
-func (s *Storage) NewGauge(opts prometheus.GaugeOpts, options ...GaugeOption) (*Gauge, error) {
-	gauge, err := newGauge(s, opts, options...)
+func (s *Storage) NewCounter(opts prometheus.Opts, options ...CounterOption) (*Counter, error) {
+	counter, err := newCounter(s, opts, options...)
 	if err != nil {
 		return nil, err
 	}
-	s.gauges = append(s.gauges, gauge)
-	return gauge, nil
+	s.counters = append(s.counters, counter)
+	return counter, nil
 }
 
 func (s *Storage) StartAutoSave(ctx context.Context) {
@@ -107,8 +107,8 @@ func (s *Storage) StartAutoSave(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				for _, gauge := range s.gauges {
-					err := gauge.saveMetrics()
+				for _, counter := range s.counters {
+					err := counter.saveMetrics()
 					if err != nil {
 						log.Printf("Warning: failed to save metrics periodically: %v", err)
 					}

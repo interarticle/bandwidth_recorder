@@ -14,7 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/interarticle/bandwidth_recorder/persistgauge"
+	"github.com/interarticle/bandwidth_recorder/persistmetric"
 )
 
 var (
@@ -47,9 +47,9 @@ func networkMonitoringWorker() error {
 			time.Sleep(time.Second)
 			gauge.Set(float64(atomic.LoadUint64(&layer2PlusTotal)))
 			datetimeString := time.Now().Format(monthDateFormat)
-			l2TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer2PlusDelta, 0)))
-			l3TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer3PlusDelta, 0)))
-			l4TotalBytesGauge.Add(datetimeString, float64(atomic.SwapUint64(&layer4PlusDelta, 0)))
+			l2TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer2PlusDelta, 0)))
+			l3TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer3PlusDelta, 0)))
+			l4TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer4PlusDelta, 0)))
 		}
 	}()
 	for {
@@ -88,12 +88,12 @@ var (
 		}, []string{
 			"job_start_time",
 		})
-	l2TotalBytesGauge *persistgauge.Gauge
-	l3TotalBytesGauge *persistgauge.Gauge
-	l4TotalBytesGauge *persistgauge.Gauge
+	l2TotalBytesCounter *persistmetric.Counter
+	l3TotalBytesCounter *persistmetric.Counter
+	l4TotalBytesCounter *persistmetric.Counter
 )
 
-var persistStorage *persistgauge.Storage
+var persistStorage *persistmetric.Storage
 
 func init() {
 	prometheus.MustRegister(wanTotalBytesGauge)
@@ -105,35 +105,35 @@ func main() {
 	http.Handle("/metrics", promhttp.Handler())
 
 	var err error
-	persistStorage, err = persistgauge.New(*databasePath)
+	persistStorage, err = persistmetric.New(*databasePath)
 	persistStorage.StartAutoSave(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
-	l2TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+	l2TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
 		Name: "l2_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 2",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	prometheus.MustRegister(l2TotalBytesGauge)
-	l3TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+	prometheus.MustRegister(l2TotalBytesCounter)
+	l3TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
 		Name: "l3_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 3",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	prometheus.MustRegister(l3TotalBytesGauge)
-	l4TotalBytesGauge, err = persistStorage.NewGauge(prometheus.GaugeOpts{
+	prometheus.MustRegister(l3TotalBytesCounter)
+	l4TotalBytesCounter, err = persistStorage.NewCounter(prometheus.GaugeOpts{
 		Name: "l4_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 4",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	prometheus.MustRegister(l4TotalBytesGauge)
+	prometheus.MustRegister(l4TotalBytesCounter)
 
 	go func() {
 		err := networkMonitoringWorker()
