@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"log"
@@ -17,7 +18,8 @@ var (
 func main() {
 	flag.Parse()
 
-	storage, err := persistmetric.New(*dbPath)
+	storage, err := persistmetric.New(persistmetric.AutoSave(false, 0))
+	err = storage.Initialize(context.Background(), *dbPath)
 
 	if err != nil {
 		log.Fatal(err)

@@ -1,6 +1,7 @@
 package persistmetric
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -13,63 +14,52 @@ const (
 	timeWindowStartLabelName = "since"
 )
 
-type CounterOption func(*Counter) error
-
-func KeepNOldRecords(n int) CounterOption {
-	return func(c *Counter) error {
-		c.keepNOldRecords = n
-		return nil
-	}
-}
-
 type Counter struct {
-	s        *Storage
-	gaugeVec *prometheus.GaugeVec
+	s          *Storage
+	counterVec *prometheus.GaugeVec
 
 	mu           sync.Mutex
 	metricName   string
 	sinceToValue map[string]float64
 
-	keepNOldRecords int
+	options *options
 }
 
-func newCounter(s *Storage, opts prometheus.Opts, options ...CounterOption) (*Counter, error) {
-	c := &Counter{
+func newCounter(s *Storage, counterOpts prometheus.Opts, opts *options) *Counter {
+	return &Counter{
 		s: s,
-		gaugeVec: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts(opts), []string{timeWindowStartLabelName}),
-		metricName:   fmt.Sprintf("%s::%s::%s", opts.Namespace, opts.Subsystem, opts.Name),
-		sinceToValue: make(map[string]float64),
+		counterVec: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts(counterOpts), []string{timeWindowStartLabelName}),
+		metricName: fmt.Sprintf("%s::%s::%s", counterOpts.Namespace,
+			counterOpts.Subsystem, counterOpts.Name),
+		options: opts,
+	}
+}
 
-		keepNOldRecords: 2,
+func (c *Counter) loadSavedValues() error {
+	if c.sinceToValue != nil {
+		return errors.New("already initialized")
 	}
 
-	for _, option := range options {
-		err := option(c)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	values, err := s.ReadMetric(c.metricName)
+	values, err := c.s.ReadMetric(c.metricName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
+	c.sinceToValue = make(map[string]float64)
 	for _, value := range values {
-		c.gaugeVec.WithLabelValues(value.Since).Set(value.Value)
+		c.counterVec.WithLabelValues(value.Since).Set(value.Value)
 		c.sinceToValue[value.Since] = value.Value
 	}
-
-	return c, nil
+	return nil
 }
 
 func (c *Counter) Describe(ch chan<- *prometheus.Desc) {
-	c.gaugeVec.Describe(ch)
+	c.counterVec.Describe(ch)
 }
 
 func (c *Counter) Collect(ch chan<- prometheus.Metric) {
-	c.gaugeVec.Collect(ch)
+	c.counterVec.Collect(ch)
 
 	go func() {
 		err := c.saveMetrics()
@@ -80,7 +70,11 @@ func (c *Counter) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (c *Counter) Add(since string, delta float64) {
-	c.gaugeVec.WithLabelValues(since).Add(delta)
+	if c.sinceToValue == nil {
+		panic(errors.New("not initialized"))
+	}
+
+	c.counterVec.WithLabelValues(since).Add(delta)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -91,6 +85,10 @@ func (c *Counter) saveMetrics() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.sinceToValue == nil {
+		return errors.New("not initialized")
+	}
+
 	// Compact map.
 	var keys, dropKeys []string
 	for k := range c.sinceToValue {
@@ -98,9 +96,9 @@ func (c *Counter) saveMetrics() error {
 	}
 	sort.Strings(keys)
 
-	if len(keys) > c.keepNOldRecords {
-		dropKeys = keys[0 : len(keys)-c.keepNOldRecords]
-		keys = keys[len(keys)-c.keepNOldRecords : len(keys)]
+	if len(keys) > c.options.numOldRecordsToKeep {
+		dropKeys = keys[0 : len(keys)-c.options.numOldRecordsToKeep]
+		keys = keys[len(keys)-c.options.numOldRecordsToKeep : len(keys)]
 	}
 
 	for _, key := range dropKeys {

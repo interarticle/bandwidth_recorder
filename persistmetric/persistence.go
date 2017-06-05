@@ -3,6 +3,7 @@ package persistmetric
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
@@ -12,13 +13,14 @@ import (
 
 const (
 	metricsBucketName = "persistent-metrics"
-	autoSaveInterval  = 1 * time.Minute
 )
 
 type Storage struct {
 	db *bolt.DB
 
 	counters []*Counter
+
+	options *options
 }
 
 type MetricValue struct {
@@ -28,27 +30,26 @@ type MetricValue struct {
 
 type MetricValues []MetricValue
 
-func New(path string) (*Storage, error) {
-	db, err := bolt.Open(path, 0644, &bolt.Options{Timeout: time.Second})
+func New(opts ...Option) (*Storage, error) {
+	s := &Storage{}
+
+	s.options = defaultOptions()
+	err := s.options.Update(opts...)
 	if err != nil {
 		return nil, err
 	}
-	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(metricsBucketName))
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &Storage{
-		db: db,
-	}, nil
+
+	return s, nil
 }
 
 func (s *Storage) ListMetrics() ([]string, error) {
+	if s.db == nil {
+		return nil, errors.New("not initialized")
+	}
+
 	var metrics []string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(metricsBucketName))
+		b := tx.Bucket([]byte(s.options.metricsBucketName))
 		c := b.Cursor()
 		for k, _ := c.First(); k != nil; k, _ = c.Next() {
 			metrics = append(metrics, string(k))
@@ -62,9 +63,13 @@ func (s *Storage) ListMetrics() ([]string, error) {
 }
 
 func (s *Storage) ReadMetric(metric string) (MetricValues, error) {
+	if s.db == nil {
+		return nil, errors.New("not initialized")
+	}
+
 	var result MetricValues
 	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(metricsBucketName))
+		b := tx.Bucket([]byte(s.options.metricsBucketName))
 		data := b.Get([]byte(metric))
 		if data == nil {
 			return nil
@@ -79,8 +84,12 @@ func (s *Storage) ReadMetric(metric string) (MetricValues, error) {
 }
 
 func (s *Storage) WriteMetric(metric string, values MetricValues) error {
+	if s.db == nil {
+		return errors.New("not initialized")
+	}
+
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(metricsBucketName))
+		b := tx.Bucket([]byte(s.options.metricsBucketName))
 		data, err := json.Marshal(&values)
 		if err != nil {
 			return err
@@ -90,32 +99,73 @@ func (s *Storage) WriteMetric(metric string, values MetricValues) error {
 }
 
 // Warning: not thread safe.
-func (s *Storage) NewCounter(opts prometheus.Opts, options ...CounterOption) (*Counter, error) {
-	counter, err := newCounter(s, opts, options...)
+func (s *Storage) NewCounter(counterOpts prometheus.Opts, opts ...Option) (*Counter, error) {
+	if s.db != nil {
+		return nil, errors.New("must not add new counter after initialization")
+	}
+
+	newOptions := s.options.Copy()
+	err := newOptions.Update(opts...)
 	if err != nil {
 		return nil, err
 	}
+	counter := newCounter(s, counterOpts, newOptions)
 	s.counters = append(s.counters, counter)
 	return counter, nil
 }
 
-func (s *Storage) StartAutoSave(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(autoSaveInterval)
-		defer ticker.Stop()
+func (s *Storage) MustNewCounter(counterOpts prometheus.Opts, opts ...Option) *Counter {
+	counter, err := s.NewCounter(counterOpts, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return counter
+}
 
-		for {
-			select {
-			case <-ticker.C:
-				for _, counter := range s.counters {
-					err := counter.saveMetrics()
-					if err != nil {
-						log.Printf("Warning: failed to save metrics periodically: %v", err)
-					}
-				}
-			case <-ctx.Done():
-				return
-			}
+func (s *Storage) Initialize(ctx context.Context, dbPath string) error {
+	if s.db != nil {
+		return errors.New("already initialized")
+	}
+
+	db, err := bolt.Open(dbPath, 0644, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		return err
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(s.options.metricsBucketName))
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.db = db
+
+	for _, counter := range s.counters {
+		err := counter.loadSavedValues()
+		if err != nil {
+			return err
 		}
-	}()
+	}
+
+	if s.options.enableAutoSave {
+		go func() {
+			ticker := time.NewTicker(s.options.autoSaveInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					for _, counter := range s.counters {
+						err := counter.saveMetrics()
+						if err != nil {
+							log.Printf("Warning: failed to save metrics periodically: %v", err)
+						}
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	return nil
 }
