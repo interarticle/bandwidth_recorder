@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,7 +35,11 @@ func networkMonitoringWorker() error {
 	jobBaseLabel := prometheus.Labels{"job_start_time": startTime.Format(time.RFC3339)}
 	gauge := wanTotalBytesGauge.With(jobBaseLabel)
 
-	log.Printf("Starting bandwidth monitoring on wanDevice %s", *wanDevice)
+	intf, err := net.InterfaceByName(*wanDevice)
+	if err != nil {
+		return err
+	}
+	log.Printf("Starting bandwidth monitoring on wanDevice %v", intf)
 	handle, err := pcap.OpenLive(*wanDevice, 500, false, pcap.BlockForever)
 	if err != nil {
 		return err
@@ -42,6 +49,9 @@ func networkMonitoringWorker() error {
 	var layer2PlusDelta uint64
 	var layer3PlusDelta uint64
 	var layer4PlusDelta uint64
+	var layer4TxDelta uint64
+	var layer4RxDelta uint64
+	var layer4UnknownDelta uint64
 	go func() {
 		for {
 			time.Sleep(time.Second)
@@ -50,6 +60,9 @@ func networkMonitoringWorker() error {
 			l2TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer2PlusDelta, 0)))
 			l3TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer3PlusDelta, 0)))
 			l4TotalBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer4PlusDelta, 0)))
+			l4TxBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer4TxDelta, 0)))
+			l4RxBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer4RxDelta, 0)))
+			l4UnknownBytesCounter.Add(datetimeString, float64(atomic.SwapUint64(&layer4UnknownDelta, 0)))
 		}
 	}()
 	for {
@@ -57,22 +70,37 @@ func networkMonitoringWorker() error {
 		if err != nil {
 			return err
 		}
+		remainingSize := uint64(packet.Metadata().Length)
+		var srcMAC, dstMAC *net.HardwareAddr
 		for i, layer := range packet.Layers() {
 			if _, ok := layer.(gopacket.ErrorLayer); ok {
 				continue // Ignore error layer.
 			}
-			remainingSize := uint64(packet.Metadata().Length)
 			switch i {
 			case 0:
 				remainingSize -= uint64(len(layer.LayerContents()))
 				atomic.AddUint64(&layer2PlusTotal, remainingSize)
 				atomic.AddUint64(&layer2PlusDelta, remainingSize)
+
+				if eth, ok := layer.(*layers.Ethernet); ok {
+					srcMAC = &eth.SrcMAC
+					dstMAC = &eth.DstMAC
+				}
 			case 1:
 				remainingSize -= uint64(len(layer.LayerContents()))
 				atomic.AddUint64(&layer3PlusDelta, remainingSize)
 			case 2:
 				remainingSize -= uint64(len(layer.LayerContents()))
 				atomic.AddUint64(&layer4PlusDelta, remainingSize)
+
+				switch {
+				case srcMAC != nil && bytes.Equal(*srcMAC, intf.HardwareAddr):
+					atomic.AddUint64(&layer4TxDelta, remainingSize)
+				case dstMAC != nil && bytes.Equal(*dstMAC, intf.HardwareAddr):
+					atomic.AddUint64(&layer4RxDelta, remainingSize)
+				default:
+					atomic.AddUint64(&layer4UnknownDelta, remainingSize)
+				}
 			default:
 				break // Stop at the first unmatched layer.
 			}
@@ -101,6 +129,18 @@ var (
 		Name: "l4_total_bytes",
 		Help: "Total number of bytes sent and received from the Internet on Layer 4",
 	})
+	l4TxBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l4_tx_bytes",
+		Help: "Number of bytes sent to the Internet on Layer 4",
+	})
+	l4RxBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l4_rx_bytes",
+		Help: "Number of bytes received from the Internet on Layer 4",
+	})
+	l4UnknownBytesCounter = persistStorage.MustNewCounter(prometheus.Opts{
+		Name: "l4_unknown_bytes",
+		Help: "Number of bytes transmitted on the Internet interface which cannot be classified under Tx or Rx",
+	})
 )
 
 func init() {
@@ -108,6 +148,9 @@ func init() {
 	prometheus.MustRegister(l2TotalBytesCounter)
 	prometheus.MustRegister(l3TotalBytesCounter)
 	prometheus.MustRegister(l4TotalBytesCounter)
+	prometheus.MustRegister(l4RxBytesCounter)
+	prometheus.MustRegister(l4TxBytesCounter)
+	prometheus.MustRegister(l4UnknownBytesCounter)
 }
 
 func main() {
