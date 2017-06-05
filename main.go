@@ -81,7 +81,7 @@ func networkMonitoringWorker() error {
 }
 
 var (
-	persistStorage     = persistmetric.New()
+	persistStorage     = persistmetric.MustNew()
 	wanTotalBytesGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "wan_total_bytes",
@@ -115,7 +115,7 @@ func main() {
 
 	http.Handle("/metrics", promhttp.Handler())
 
-	err = persistmetric.Initialize(context.Background(), *databasePath)
+	err := persistStorage.Initialize(context.Background(), *databasePath)
 	if err != nil {
 		log.Fatal(err)
 	}

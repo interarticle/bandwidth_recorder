@@ -42,6 +42,14 @@ func New(opts ...Option) (*Storage, error) {
 	return s, nil
 }
 
+func MustNew(opts ...Option) *Storage {
+	storage, err := New(opts...)
+	if err != nil {
+		panic(err)
+	}
+	return storage
+}
+
 func (s *Storage) ListMetrics() ([]string, error) {
 	if s.db == nil {
 		return nil, errors.New("not initialized")
