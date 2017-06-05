@@ -132,18 +132,32 @@ func mustParseMAC(s string) net.HardwareAddr {
 	return addr
 }
 
-type macRange struct {
-	start net.HardwareAddr
-	stop  net.HardwareAddr
+type macMatch struct {
+	addr net.HardwareAddr
+	mask net.HardwareAddr
 }
 
-func (m macRange) Match(a net.HardwareAddr) bool {
-	return bytes.Compare(m.start, a) <= 0 && bytes.Compare(a, m.stop) <= 0
+func (m macMatch) Match(a net.HardwareAddr) bool {
+	reference := make([]byte, len(m.addr))
+	copy(reference, m.addr)
+	target := make([]byte, len(a))
+	copy(target, a)
+	for i, b := range m.mask {
+		if i < len(reference) {
+			reference[i] &= b
+		}
+		if i < len(target) {
+			target[i] &= b
+		}
+	}
+	return bytes.Equal(reference, target)
 }
 
-var ignoreLANMACRanges = []macRange{
-	macRange{mustParseMAC("ff:ff:ff:ff:ff:ff"), mustParseMAC("ff:ff:ff:ff:ff:ff")},
-	macRange{mustParseMAC("01-00-5E-00-00-00"), mustParseMAC("01-00-5E-7F-FF-FF")},
+var ignoreLANMACRanges = []macMatch{
+	// Broadcast.
+	macMatch{mustParseMAC("ff:ff:ff:ff:ff:ff"), mustParseMAC("ff:ff:ff:ff:ff:ff")},
+	// All multicast.
+	macMatch{mustParseMAC("01:00:00:00:00:00"), mustParseMAC("01:00:00:00:00:00")},
 }
 
 func lanMonitoringWorker() error {
@@ -196,8 +210,8 @@ PacketLoop:
 				if eth, ok := layer.(*layers.Ethernet); ok {
 					srcMAC = eth.SrcMAC
 					dstMAC = eth.DstMAC
-					for _, mRange := range ignoreLANMACRanges {
-						if mRange.Match(srcMAC) || mRange.Match(dstMAC) {
+					for _, mMatch := range ignoreLANMACRanges {
+						if mMatch.Match(srcMAC) || mMatch.Match(dstMAC) {
 							continue PacketLoop // Drop ignored ranges early.
 						}
 					}
