@@ -24,8 +24,9 @@ type Storage struct {
 }
 
 type MetricValue struct {
-	Since string  `json:"since"`
-	Value float64 `json:"value"`
+	Since  string   `json:"since"`
+	Value  float64  `json:"value"`
+	Labels []string `json:"labels"`
 }
 
 type MetricValues []MetricValue

@@ -1,6 +1,7 @@
 package persistmetric
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
@@ -20,16 +21,57 @@ type Counter struct {
 
 	mu           sync.Mutex
 	metricName   string
-	sinceToValue map[string]float64
+	sinceToValue map[string]map[string]*MetricValue
 
 	options *options
 }
 
+type CounterWithLabels struct {
+	c *Counter
+
+	labelValues  []string
+	userLabelKey string
+}
+
+func (cl *CounterWithLabels) Add(since string, delta float64) {
+	labelValues := append(cl.labelValues, since)
+	cl.c.counterVec.WithLabelValues(labelValues...).Add(delta)
+
+	cl.c.mu.Lock()
+	defer cl.c.mu.Unlock()
+	var sinceMap map[string]*MetricValue
+	var ok bool
+	if sinceMap, ok = cl.c.sinceToValue[since]; !ok {
+		sinceMap = make(map[string]*MetricValue)
+		cl.c.sinceToValue[since] = sinceMap
+	}
+	var value *MetricValue
+	if value, ok = sinceMap[cl.userLabelKey]; !ok {
+		value = &MetricValue{
+			Since:  since,
+			Value:  0,
+			Labels: cl.labelValues,
+		}
+		sinceMap[cl.userLabelKey] = value
+	}
+	value.Value += delta
+}
+
+func userLabelKey(labels []string) string {
+	var buffer bytes.Buffer
+	for _, label := range labels {
+		buffer.WriteString(fmt.Sprintf("%d ", len(label)))
+		buffer.WriteString(label)
+	}
+	return buffer.String()
+}
+
 func newCounter(s *Storage, counterOpts prometheus.Opts, opts *options) *Counter {
+	allLabels := append(opts.variableLabels, timeWindowStartLabelName)
 	return &Counter{
 		s: s,
 		counterVec: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts(counterOpts), []string{timeWindowStartLabelName}),
+			prometheus.GaugeOpts(counterOpts), allLabels),
 		metricName: fmt.Sprintf("%s::%s::%s", counterOpts.Namespace,
 			counterOpts.Subsystem, counterOpts.Name),
 		options: opts,
@@ -46,10 +88,18 @@ func (c *Counter) loadSavedValues() error {
 		return err
 	}
 
-	c.sinceToValue = make(map[string]float64)
+	c.sinceToValue = make(map[string]map[string]*MetricValue)
 	for _, value := range values {
-		c.counterVec.WithLabelValues(value.Since).Set(value.Value)
-		c.sinceToValue[value.Since] = value.Value
+		labelValues := append(value.Labels, value.Since)
+		c.counterVec.WithLabelValues(labelValues...).Set(value.Value)
+
+		var sinceMap map[string]*MetricValue
+		var ok bool
+		if sinceMap, ok = c.sinceToValue[value.Since]; !ok {
+			sinceMap = make(map[string]*MetricValue)
+			c.sinceToValue[value.Since] = sinceMap
+		}
+		sinceMap[userLabelKey(value.Labels)] = &value
 	}
 	return nil
 }
@@ -69,16 +119,22 @@ func (c *Counter) Collect(ch chan<- prometheus.Metric) {
 	}()
 }
 
-func (c *Counter) Add(since string, delta float64) {
+func (c *Counter) WithLabelValues(labelValues ...string) *CounterWithLabels {
 	if c.sinceToValue == nil {
 		panic(errors.New("not initialized"))
 	}
 
-	c.counterVec.WithLabelValues(since).Add(delta)
+	newLabelValues := make([]string, len(labelValues))
+	copy(newLabelValues, labelValues)
+	return &CounterWithLabels{
+		c:            c,
+		labelValues:  newLabelValues,
+		userLabelKey: userLabelKey(labelValues),
+	}
+}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.sinceToValue[since] += delta
+func (c *Counter) Add(since string, delta float64) {
+	c.WithLabelValues().Add(since, delta)
 }
 
 func (c *Counter) saveMetrics() error {
@@ -108,11 +164,9 @@ func (c *Counter) saveMetrics() error {
 	// Save metrics.
 	var values MetricValues
 	for _, key := range keys {
-		value := MetricValue{
-			Since: key,
-			Value: c.sinceToValue[key],
+		for _, value := range c.sinceToValue[key] {
+			values = append(values, *value)
 		}
-		values = append(values, value)
 	}
 
 	return c.s.WriteMetric(c.metricName, values)

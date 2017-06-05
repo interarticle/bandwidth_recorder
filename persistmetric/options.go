@@ -12,6 +12,8 @@ type options struct {
 	autoSaveInterval time.Duration
 
 	metricsBucketName string
+
+	variableLabels []string
 }
 
 func defaultOptions() *options {
@@ -29,6 +31,9 @@ func (o *options) Copy() *options {
 	newOptions := &options{}
 
 	*newOptions = *o
+
+	newOptions.variableLabels = make([]string, len(o.variableLabels))
+	copy(newOptions.variableLabels, o.variableLabels)
 	return newOptions
 }
 
@@ -65,6 +70,21 @@ func BucketName(name string) Option {
 			return errors.New("invalid bucket name")
 		}
 		c.metricsBucketName = name
+		return nil
+	}
+}
+
+// Be careful before passing this to New(), since all deriverd counters will
+// then have the labels specified applied, unless explicitly overridden.
+func VariableLabels(labels []string) Option {
+	return func(c *options) error {
+		for _, label := range labels {
+			if label == "" {
+				return errors.New("invalid empty label")
+			}
+		}
+		c.variableLabels = make([]string, len(labels))
+		copy(c.variableLabels, labels)
 		return nil
 	}
 }
